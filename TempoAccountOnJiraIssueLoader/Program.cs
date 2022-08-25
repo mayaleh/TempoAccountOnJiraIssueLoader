@@ -1,22 +1,30 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using TempoAccountOnJiraIssueLoader;
 using Maya.Ext.Rop;
+using Maya.Ext;
 
-await LoadJiraIssuesProgram()
+var filePath = HandleValidInput("Enter Excel file path"); // Singleton
+
+var excelService = new ExcelService(); // Singleton
+
+await LoadIssuesKeysFromExcelProgram(filePath, excelService)
+    .BindAsync(issuesKeys => LoadJiraIssuesProgram(issuesKeys))
     .BindAsync(async issues =>
     {
         return await LoadTempoAccountsProgram()
-            .MapAsync(accounts => Task.FromResult((Issues: issues, Accounts: accounts)));
+            .MapAsync(accounts => Task.FromResult((issues.Issues, Accounts: accounts))); // closure on issues
          
     })
-    // TODO: fill excel account key for issues worklog program
+    .BindAsync(async data => await FillIssuesTempoAccountIntoExcelProgram(filePath, excelService, data.Issues, data.Accounts))
     .MatchFailureAsync(fail =>
     {
         Console.WriteLine(fail.Message);
         return Task.CompletedTask;
-    }); ;
+    });
 
-static async Task<Maya.Ext.Rop.Result<IssuesSearchResponse, Exception>> LoadJiraIssuesProgram()
+// Program Workflows:
+
+static async Task<Result<IssuesSearchResponse, Exception>> LoadJiraIssuesProgram(List<string> issuesKeys)
 {
     var (endpoint, email, apiKey) = (
             HandleValidInput("Enter JIRA endpoint in this format: https://mytenant.atlassian.net",
@@ -28,7 +36,7 @@ static async Task<Maya.Ext.Rop.Result<IssuesSearchResponse, Exception>> LoadJira
 
     var issues = new IssueSearchRequest()
     {
-        Keys = HandleValidInput("Enter Issues separated by comma").Split(',').ToList()
+        Keys = issuesKeys.Any() ? issuesKeys : HandleValidInput("Enter Issues separated by comma").Split(',').ToList()
     };
 
     var jiraService = new JiraService(endpoint, email, apiKey);
@@ -44,8 +52,7 @@ static async Task<Maya.Ext.Rop.Result<IssuesSearchResponse, Exception>> LoadJira
     return issuesResonseResult;
 }
 
-// Load Tempo accounts
-static async Task<Maya.Ext.Rop.Result<AccountResponse[], Exception>> LoadTempoAccountsProgram()
+static async Task<Result<AccountResponse[], Exception>> LoadTempoAccountsProgram()
 {
     var tempoService = new TempoService(HandleValidInput("Enter TEMPO access token"));
 
@@ -58,6 +65,74 @@ static async Task<Maya.Ext.Rop.Result<AccountResponse[], Exception>> LoadTempoAc
 
     return tempoAccountsResult.Map(r => r.Results);
 }
+
+static async Task<Result<List<string>, Exception>> LoadIssuesKeysFromExcelProgram(string filePath, ExcelService excelService)
+{
+    try
+    {
+        if (File.Exists(filePath) == false)
+        {
+            throw new Exception($"File {filePath} does not exists!");
+        }
+
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite);
+        var results = await excelService.ReadIIssuesKeysFileAsync(stream);
+        if (results.Any(x => x.IsFailure))
+        {
+            results.ForEach(x =>
+            {
+                if (x.IsSuccess) return;
+                Console.WriteLine($"Error in excel Row {x.Failure.RowNr}: {x.Failure.Exception.Message}");
+            });
+        }
+
+        var issues = results.Where(x => x.IsSuccess)
+            .Select(x => x.Success)
+            .Distinct()
+            .ToList();
+
+        return Result<List<string>, Exception>.Succeeded(issues ?? new());
+    }
+    catch (Exception e)
+    {
+        return Result<List<string>, Exception>.Failed(e);
+    }
+}
+
+static async Task<Result<Unit, Exception>> FillIssuesTempoAccountIntoExcelProgram(string filePath, ExcelService excelService, List<IssueSearchResponse> issues, AccountResponse[] accounts)
+{
+    try
+    {
+        var issueAccountKey = new Dictionary<string, AccountResponse>(issues.Count);
+
+        foreach (var issue in issues)
+        {
+            if (issue.Fields == null || issue.Fields?.IoTempoJira__account == null)
+            {
+                continue;
+            }
+
+            var account = accounts.FirstOrDefault(a => a.Id == issue.Fields.IoTempoJira__account.Id);
+
+            if (account == null)
+            {
+                continue;
+            }
+
+            issueAccountKey.Add(issue.Key, account);
+        }
+
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite);
+
+        return await excelService.FillAccountToExcel(stream, issueAccountKey);
+    }
+    catch (Exception e)
+    {
+        return Result<Unit, Exception>.Failed(e);
+    }
+}
+
+// Program Helper functions
 
 static string HandleValidInput(string message, Func<string?, bool>? isInvalid = null)
 {
@@ -72,5 +147,5 @@ static string HandleValidInput(string message, Func<string?, bool>? isInvalid = 
         input = Console.ReadLine();
     }
 
-    return input;
+    return input!;
 }
