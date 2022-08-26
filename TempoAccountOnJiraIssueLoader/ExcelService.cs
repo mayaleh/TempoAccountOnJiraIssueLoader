@@ -11,10 +11,11 @@ namespace TempoAccountOnJiraIssueLoader
     internal class ExcelService
     {
         const int IssueCellNum = 0;
-        const int AccountKeyCellNum = 0;
+        const int AccountKeyCellNum = 9;
         const int StartReadRowNum = 1;
 
-        public Task<List<Result<string, (Exception Exception, int RowNr)>>> ReadIIssuesKeysFileAsync(FileStream fileStream, Action<int>? onProgressChanged = null)
+        public Task<List<Result<string, (Exception Exception, int RowNr)>>> ReadIIssuesKeysFileAsync(
+            FileStream fileStream, Action<int>? onProgressChanged = null)
         {
             try
             {
@@ -25,7 +26,7 @@ namespace TempoAccountOnJiraIssueLoader
 
                 var worklogsResults = new List<Result<string, (Exception, int)>>();
 
-                for (int i = StartReadRowNum; i <= sheet.LastRowNum; i++)
+                for (var i = StartReadRowNum; i <= sheet.LastRowNum; i++)
                 {
                     var row = sheet.GetRow(i);
 
@@ -33,8 +34,9 @@ namespace TempoAccountOnJiraIssueLoader
 
                     if (row.Cells.All(d => d.CellType == CellType.Blank)) continue; // all cells in row are empty
                     var cellVal = row.GetCell(IssueCellNum).StringCellValue;
-                    worklogsResults.Add(Result<string, (Exception Exception, int RowNr)>.Succeeded(cellVal) 
-                        ?? Result<string, (Exception Exception, int RowNr)>.Failed((new Exception(), i)));
+                    worklogsResults.Add(Result<string, (Exception Exception, int RowNr)>.Succeeded(cellVal)
+                                        ?? Result<string, (Exception Exception, int RowNr)>
+                                            .Failed((new Exception(), i)));
 
                     onProgressChanged?.Invoke(i);
                 }
@@ -47,16 +49,22 @@ namespace TempoAccountOnJiraIssueLoader
             }
         }
 
-        public Task<Result<Unit, Exception>> FillAccountToExcel(FileStream fileStream, Dictionary<string, AccountResponse> issueAccount)
+        public Task<Result<Unit, Exception>> FillAccountToExcel(string filePath,
+            Dictionary<string, AccountResponse> issueAccount)
         {
             try
             {
-                fileStream.Position = 0;
+                //fileStream.Position = 0;
+                XSSFWorkbook xssWorkbook;
+                using (var readStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                {
+                    xssWorkbook = new XSSFWorkbook(readStream);
+                    readStream.Close();
+                }
 
-                var xssWorkbook = new XSSFWorkbook(fileStream);
                 var sheet = xssWorkbook.GetSheetAt(0);
 
-                for (int i = StartReadRowNum; i <= sheet.LastRowNum; i++)
+                for (var i = StartReadRowNum; i <= sheet.LastRowNum; i++)
                 {
                     var row = sheet.GetRow(i);
 
@@ -70,14 +78,19 @@ namespace TempoAccountOnJiraIssueLoader
                     {
                         continue;
                     }
-                    if (issueAccount.TryGetValue(issueKey, out var accountKey))
+
+                    if (!issueAccount.TryGetValue(issueKey, out var accountKey))
                     {
-                        var accountCell = row.CreateCell(AccountKeyCellNum, CellType.String);
-                        accountCell.SetCellValue((IRichTextString)accountKey);
+                        continue;
                     }
+
+                    var accountCell = row.CreateCell(AccountKeyCellNum, CellType.String);
+                    accountCell.SetCellValue(accountKey.Key);
                 }
 
-                xssWorkbook.Write(fileStream);
+                using var writeStream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
+                xssWorkbook.Write(writeStream);
+                writeStream.Close();
 
                 return Task.FromResult(Result<Unit, Exception>.Succeeded(Unit.Default));
             }
